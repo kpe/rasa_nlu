@@ -4,6 +4,7 @@ from __future__ import division
 from __future__ import absolute_import
 import os
 
+import errno
 from typing import List
 from typing import Optional
 from typing import Text
@@ -19,20 +20,33 @@ def relative_normpath(f, path):
         return None
 
 
+def create_dir(dir_path):
+    # type: (Text) -> None
+    """Creates a directory and its super paths. Succeeds even if the path already exists."""
+
+    try:
+        os.makedirs(dir_path)
+    except OSError as e:
+        # be happy if someone already created the path
+        if e.errno != errno.EEXIST:
+            raise
+
+
 def create_dir_for_file(file_path):
     # type: (Text) -> None
     """Creates any missing parent directories of this files path."""
 
     try:
         os.makedirs(os.path.dirname(file_path))
-    except OSError:
+    except OSError as e:
         # be happy if someone already created the path
-        pass
+        if e.errno != errno.EEXIST:
+            raise
 
 
 def recursively_find_files(resource_name):
     # type: (Text) -> List[Text]
-    """Traverse directory hirachry to find files.
+    """Traverse directory hierarchy to find files.
 
     `resource_name` can be a folder or a file. In both cases we will return a list of files."""
 
@@ -56,7 +70,9 @@ def recursively_find_files(resource_name):
                 resources += [current_node]
             nodes_to_visit = nodes_to_visit[1:]
         return resources
-    elif not os.path.exists(resource_name):
-        raise ValueError("Could not locate the resource '{}'.".format(os.path.abspath(resource_name)))
     else:
-        raise ValueError("Resource name must be an existing directory or file")
+        raise ValueError("Could not locate the resource '{}'.".format(os.path.abspath(resource_name)))
+
+
+def list_to_str(l, delim=", ", quote="'"):
+    return delim.join([quote + e + quote for e in l])

@@ -7,18 +7,26 @@ import logging
 import os
 from collections import defaultdict
 
+import typing
 from builtins import object
 import inspect
 
 from typing import Any
+from typing import ClassVar
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 from typing import Text
 from typing import Tuple
 from typing import Type
 
 from rasa_nlu.config import RasaNLUConfig
+
+logger = logging.getLogger(__name__)
+
+if typing.TYPE_CHECKING:
+    from rasa_nlu.model import Metadata
 
 
 def load_component(component_clz, context, config):
@@ -58,7 +66,7 @@ def fill_args(arguments, context, config):
     return filled
 
 
-def __read_dev_requirements(file_name):
+def _read_dev_requirements(file_name):
     """Reads the dev requirements and groups the pinned versions into sections indicated by comments in the file.
 
     The dev requirements should be grouped by preceeding comments. The comment should start with `#` followed by
@@ -76,25 +84,34 @@ def __read_dev_requirements(file_name):
     return requirements
 
 
-def validate_requirements(component_names):
-    # type: (List[Text]) -> None
+def find_unavailable_packages(package_names):
+    # type: (List[Text]) -> Set[Text]
+    """Tries to import all the package names and returns the packages where it failed."""
+    import importlib
+
+    failed_imports = set()
+    for package in package_names:
+        try:
+            importlib.import_module(package)
+        except ImportError:
+            failed_imports.add(package)
+    return failed_imports
+
+
+def validate_requirements(component_names, dev_requirements_file="dev-requirements.txt"):
+    # type: (List[Text], Text) -> None
     """Ensures that all required python packages are installed to instantiate and used the passed components."""
     from rasa_nlu import registry
-    import importlib
 
     # Validate that all required packages are installed
     failed_imports = set()
     for component_name in component_names:
         component_class = registry.get_component_class(component_name)
-        for package in component_class.required_packages():
-            try:
-                importlib.import_module(package)
-            except ImportError:
-                failed_imports.add(package)
-    if failed_imports:
+        failed_imports.update(find_unavailable_packages(component_class.required_packages()))
+    if failed_imports:  # pragma: no cover
         # if available, use the development file to figure out the correct version numbers for each requirement
-        if os.path.exists("dev-requirements.txt"):
-            all_requirements = __read_dev_requirements("dev-requirements.txt")
+        if os.path.exists(dev_requirements_file):
+            all_requirements = _read_dev_requirements(dev_requirements_file)
             missing_requirements = [r for i in failed_imports for r in all_requirements[i]]
             raise Exception("Not all required packages are installed. To use this pipeline, run\n\t" +
                             "> pip install {}".format(" ".join(missing_requirements)))
@@ -114,7 +131,7 @@ def validate_arguments(pipeline, config, allow_empty_pipeline=False):
                          "The `backend` configuration key is NOT supported anymore.")
 
     # Validate the init phase
-    context = {}
+    context = {}    # type: Dict[Text, Any]
 
     for component in pipeline:
         try:
@@ -122,8 +139,8 @@ def validate_arguments(pipeline, config, allow_empty_pipeline=False):
             updates = component.context_provides.get("pipeline_init", [])
             for u in updates:
                 context[u] = None
-        except MissingArgumentError as e:
-            raise Exception("Failed to validate at component '{}'. {}".format(component.name, e.message))
+        except MissingArgumentError as e:   # pragma: no cover
+            raise Exception("Failed to validate component '{}'. {}".format(component.name, e))
 
     after_init_context = context.copy()
 
@@ -135,12 +152,12 @@ def validate_arguments(pipeline, config, allow_empty_pipeline=False):
             updates = component.context_provides.get("train", [])
             for u in updates:
                 context[u] = None
-        except MissingArgumentError as e:
-            raise Exception("Failed to validate at component '{}'. {}".format(component.name, e.message))
+        except MissingArgumentError as e:   # pragma: no cover
+            raise Exception("Failed to validate at component '{}'. {}".format(component.name, e))
 
     # Reset context to test processing phase and prepare for training phase
-    context = after_init_context
-    context["text"] = None
+    context = {"entities": [], "text": None}
+    context.update(after_init_context)
 
     for component in pipeline:
         try:
@@ -148,8 +165,8 @@ def validate_arguments(pipeline, config, allow_empty_pipeline=False):
             updates = component.context_provides.get("process", [])
             for u in updates:
                 context[u] = None
-        except MissingArgumentError as e:
-            raise Exception("Failed to validate at component '{}'. {}".format(component.name, e.message))
+        except MissingArgumentError as e:   # pragma: no cover
+            raise Exception("Failed to validate at component '{}'. {}".format(component.name, e))
 
 
 class MissingArgumentError(ValueError):
@@ -162,6 +179,10 @@ class MissingArgumentError(ValueError):
     def __init__(self, message):
         # type: (Text) -> None
         super(MissingArgumentError, self).__init__(message)
+        self.message = message
+
+    def __str__(self):
+        return self.message
 
 
 class Component(object):
@@ -189,13 +210,13 @@ class Component(object):
         "pipeline_init": [],
         "train": [],
         "process": [],
-    }
+    }                       # type: Dict[Text, Any]
 
     # Defines which of the attributes the component provides should be added to the final output json at the end of the
     # pipeline. Every attribute in `output_provides` should be part of the above `context_provides['process']`. As it
     # wouldn't make much sense to keep an attribute in the output that is not generated. Every other attribute provided
     # in the context during the process step will be removed from the output json.
-    output_provides = []
+    output_provides = []    # type: List[Text]
 
     @classmethod
     def required_packages(cls):
@@ -310,9 +331,6 @@ class ComponentBuilder(object):
         from rasa_nlu.model import Metadata
 
         component_class = registry.get_component_class(component_name)
-        if component_class is None:
-            raise Exception("Failed to find component class for '{}'. Unknown component name.".format(component_name))
-
         cache_key = component_class.cache_key(metadata)
         if cache_key is not None and self.use_cache and cache_key in self.component_cache:
             return self.component_cache[cache_key], cache_key
@@ -325,7 +343,7 @@ class ComponentBuilder(object):
 
         if cache_key is not None and self.use_cache:
             self.component_cache[cache_key] = component
-            logging.info("Added '{}' to component cache. Key '{}'.".format(component.name, cache_key))
+            logger.info("Added '{}' to component cache. Key '{}'.".format(component.name, cache_key))
 
     def load_component(self, component_name, context, model_config, meta):
         # type: (Text, Dict[Text, Any], Dict[Text, Any], Metadata) -> Component
@@ -337,13 +355,10 @@ class ComponentBuilder(object):
             component, cache_key = self.__get_cached_component(component_name, meta)
             if component is None:
                 component = registry.load_component_by_name(component_name, context, model_config)
-                if component is None:
-                    raise Exception(
-                        "Failed to load component '{}'. Unknown component name.".format(component_name))
                 self.__add_to_cache(component, cache_key)
             return component
-        except MissingArgumentError as e:
-            raise Exception("Failed to load component '{}'. {}".format(component_name, e.message))
+        except MissingArgumentError as e:   # pragma: no cover
+            raise Exception("Failed to load component '{}'. {}".format(component_name, e))
 
     def create_component(self, component_name, config):
         # type: (Text, RasaNLUConfig) -> Component
@@ -356,10 +371,7 @@ class ComponentBuilder(object):
             component, cache_key = self.__get_cached_component(component_name, Metadata(config.as_dict(), None))
             if component is None:
                 component = registry.create_component_by_name(component_name, config.as_dict())
-                if component is None:
-                    raise Exception(
-                        "Failed to create component '{}'. Unknown component name.".format(component_name))
                 self.__add_to_cache(component, cache_key)
             return component
-        except MissingArgumentError as e:
-            raise Exception("Failed to create component '{}'. {}".format(component_name, e.message))
+        except MissingArgumentError as e:   # pragma: no cover
+            raise Exception("Failed to create component '{}'. {}".format(component_name, e))

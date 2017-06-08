@@ -24,6 +24,9 @@ from rasa_nlu.components import ComponentBuilder
 from rasa_nlu.config import RasaNLUConfig
 from rasa_nlu.persistor import Persistor
 from rasa_nlu.training_data import TrainingData
+from rasa_nlu.utils import create_dir
+
+logger = logging.getLogger(__name__)
 
 
 class InvalidModelError(Exception):
@@ -36,6 +39,9 @@ class InvalidModelError(Exception):
     def __init__(self, message):
         self.message = message
 
+    def __str__(self):
+        return self.message
+
 
 class Metadata(object):
     """Captures all necessary information about a model to load it and prepare it for usage."""
@@ -44,22 +50,18 @@ class Metadata(object):
     def load(model_dir):
         # type: (Text) -> 'Metadata'
         """Loads the metadata from a models directory."""
-
-        with io.open(os.path.join(model_dir, 'metadata.json'), encoding="utf-8") as f:
-            data = json.loads(f.read())
-        return Metadata(data, model_dir)
+        try:
+            with io.open(os.path.join(model_dir, 'metadata.json'), encoding="utf-8") as f:
+                data = json.loads(f.read())
+            return Metadata(data, model_dir)
+        except Exception as e:
+            raise InvalidModelError("Failed to load model metadata. {}".format(e))
 
     def __init__(self, metadata, model_dir):
         # type: (Dict[Text, Any], Optional[Text]) -> None
 
         self.metadata = metadata
         self.model_dir = model_dir
-
-    def __prepend_path(self, prop):
-        if self.metadata.get(prop) is not None:
-            return os.path.normpath(os.path.join(self.model_dir, self.metadata[prop]))
-        else:
-            return None
 
     @property
     def language(self):
@@ -73,13 +75,7 @@ class Metadata(object):
         # type: () -> List[Text]
         """Names of the processing pipeline elements."""
 
-        if 'pipeline' in self.metadata:
-            return self.metadata['pipeline']
-        elif 'backend' in self.metadata:   # This is for backwards compatibility of models trained before 0.8
-            from rasa_nlu import registry
-            return registry.registered_pipeline_templates.get(self.metadata.get('backend'))
-        else:
-            return []
+        return self.metadata.get('pipeline', [])
 
     def persist(self, model_dir):
         # type: (Text) -> None
@@ -107,8 +103,8 @@ class Trainer(object):
 
         self.config = config
         self.skip_validation = skip_validation
-        self.training_data = None
-        self.pipeline = []
+        self.training_data = None       # type: Optional[TrainingData]
+        self.pipeline = []              # type: List[Component]
         if component_builder is None:
             # If no builder is passed, every interpreter creation will result in a new builder.
             # hence, no components are reused.
@@ -133,7 +129,7 @@ class Trainer(object):
 
         self.training_data = data
 
-        context = {}
+        context = {}        # type: Dict[Text, Any]
 
         for component in self.pipeline:
             args = components.fill_args(component.pipeline_init_args(), context, self.config.as_dict())
@@ -147,14 +143,16 @@ class Trainer(object):
 
         for component in self.pipeline:
             args = components.fill_args(component.train_args(), context, self.config.as_dict())
+            logger.info("Starting to train component {}".format(component.name))
             updates = component.train(*args)
+            logger.info("Finished training component.")
             if updates:
                 context.update(updates)
 
         return Interpreter(self.pipeline, context=init_context, config=self.config.as_dict())
 
-    def persist(self, path, persistor=None, create_unique_subfolder=True):
-        # type: (Text, Optional[Persistor], bool) -> Text
+    def persist(self, path, persistor=None, model_name=None):
+        # type: (Text, Optional[Persistor], Text) -> Text
         """Persist all components of the pipeline to the passed path. Returns the directory of the persited model."""
 
         timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -163,13 +161,15 @@ class Trainer(object):
             "pipeline": [component.name for component in self.pipeline],
         }
 
-        if create_unique_subfolder:
+        if model_name is None:
             dir_name = os.path.join(path, "model_" + timestamp)
-            os.makedirs(dir_name)
         else:
-            dir_name = path
+            dir_name = os.path.join(path, model_name)
 
-        metadata.update(self.training_data.persist(dir_name))
+        create_dir(dir_name)
+
+        if self.training_data:
+            metadata.update(self.training_data.persist(dir_name))
 
         for component in self.pipeline:
             update = component.persist(dir_name)
@@ -180,7 +180,7 @@ class Trainer(object):
 
         if persistor is not None:
             persistor.save_tar(dir_name)
-        logging.info("Successfully saved model into '{}'".format(os.path.abspath(dir_name)))
+        logger.info("Successfully saved model into '{}'".format(os.path.abspath(dir_name)))
         return dir_name
 
 
@@ -188,13 +188,17 @@ class Interpreter(object):
     """Use a trained pipeline of components to parse text messages"""
 
     # Defines all attributes (and their default values) that will be returned by `parse`
-    default_output_attributes = {"intent": {"name": "", "confidence": 0.0}, "entities": [], "text": ""}
+    @staticmethod
+    def default_output_attributes():
+        return {"intent": {"name": "", "confidence": 0.0}, "entities": [], "text": ""}
 
     @staticmethod
     def load(meta, config, component_builder=None, skip_valdation=False):
         # type: (Metadata, RasaNLUConfig, Optional[ComponentBuilder], bool) -> Interpreter
         """Load a stored model and its components defined by the provided metadata."""
-        context = {"model_dir": meta.model_dir}
+        context = Interpreter.default_output_attributes()
+        context.update({"model_dir": meta.model_dir})
+
         if component_builder is None:
             # If no builder is passed, every interpreter creation will result in a new builder.
             # hence, no components are reused.
@@ -218,7 +222,7 @@ class Interpreter(object):
                     context.update(updates)
                 pipeline.append(component)
             except components.MissingArgumentError as e:
-                raise Exception("Failed to initialize component '{}'. {}".format(component.name, e.message))
+                raise Exception("Failed to initialize component '{}'. {}".format(component.name, e))
 
         return Interpreter(pipeline, context, model_config)
 
@@ -226,7 +230,7 @@ class Interpreter(object):
         # type: (List[Component], Dict[Text, Any], Dict[Text, Any], Optional[Metadata]) -> None
 
         self.pipeline = pipeline
-        self.context = context
+        self.context = context if context is not None else {}
         self.config = config
         self.meta = meta
         self.output_attributes = [output for component in pipeline for output in component.output_provides]
@@ -239,9 +243,10 @@ class Interpreter(object):
             # Not all components are able to handle empty strings. So we need to prevent that...
             # This default return will not contain all output attributes of all components,
             # but in the end, no one should pass an empty string in the first place.
-            return self.default_output_attributes.copy()
+            return self.default_output_attributes()
 
         current_context = self.context.copy()
+        current_context.update(self.default_output_attributes())
 
         current_context.update({
             "text": text,
@@ -254,10 +259,10 @@ class Interpreter(object):
                 if updates:
                     current_context.update(updates)
             except components.MissingArgumentError as e:
-                raise Exception("Failed to parse at component '{}'. {}".format(component.name, e.message))
+                raise Exception("Failed to parse at component '{}'. {}".format(component.name, e))
 
-        result = self.default_output_attributes.copy()
-        all_attributes = list(self.default_output_attributes.keys()) + self.output_attributes
+        result = self.default_output_attributes()
+        all_attributes = list(self.default_output_attributes().keys()) + self.output_attributes
         # Ensure only keys of `all_attributes` are present and no other keys are returned
         result.update({key: current_context[key] for key in all_attributes if key in current_context})
         return result

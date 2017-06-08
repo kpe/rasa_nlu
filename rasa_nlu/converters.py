@@ -1,11 +1,11 @@
-from __future__ import unicode_literals
-from __future__ import print_function
-from __future__ import division
 from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+
 import io
 import json
-import re
-import warnings
+import logging
 
 from typing import Any
 from typing import Dict
@@ -14,8 +14,9 @@ from typing import Optional
 from typing import Text
 
 from rasa_nlu import utils
-from rasa_nlu.tokenizers import Tokenizer
 from rasa_nlu.training_data import TrainingData
+
+logger = logging.getLogger(__name__)
 
 # Different supported file formats and their identifier
 WIT_FILE_FORMAT = "wit"
@@ -61,7 +62,7 @@ def load_api_data(files):
                 elif intent:
                     intent_examples.append({"text": text, "intent": intent})
                 elif entities:
-                    entity_examples.append({"text": text, "intent": intent, "entities": entities})
+                    entity_examples.append({"text": text, "entities": entities})
 
         # create synonyms dictionary
         if "name" in data and "entries" in data:
@@ -82,6 +83,12 @@ def load_luis_data(filename):
 
     with io.open(filename, encoding="utf-8-sig") as f:
         data = json.loads(f.read())
+
+    # Simple check to ensure we support this luis data schema version
+    if not data["luis_schema_version"].startswith("2"):
+        raise Exception("Invalid luis data schema version {}, should be 2.x.x. ".format(data["luis_schema_version"]) +
+                        "Make sure to use the latest luis version (e.g. by downloading your data again).")
+
     for s in data["utterances"]:
         text = s.get("text")
         intent = s.get("intent")
@@ -96,7 +103,7 @@ def load_luis_data(filename):
         elif intent:
             intent_examples.append({"text": text, "intent": intent})
         elif entities:
-            entity_examples.append({"text": text, "intent": intent, "entities": entities})
+            entity_examples.append({"text": text, "entities": entities})
     return TrainingData(intent_examples, entity_examples, common_examples)
 
 
@@ -127,7 +134,7 @@ def load_wit_data(filename):
         elif intent:
             intent_examples.append({"text": text, "intent": intent})
         elif entities:
-            entity_examples.append({"text": text, "intent": intent, "entities": entities})
+            entity_examples.append({"text": text, "entities": entities})
     return TrainingData(intent_examples, entity_examples, common_examples)
 
 
@@ -235,7 +242,7 @@ def resolve_data_files(resource_name):
     try:
         return utils.recursively_find_files(resource_name)
     except ValueError as e:
-        raise ValueError("Invalid training data file / folder specified. " + e.message)
+        raise ValueError("Invalid training data file / folder specified. {}".format(e))
 
 
 def load_data(resource_name, fformat=None):
@@ -247,6 +254,8 @@ def load_data(resource_name, fformat=None):
     if not fformat:
         fformat = guess_format(files)
 
+    logger.info("Training data format at {} is {}".format(resource_name, fformat))
+
     if fformat == LUIS_FILE_FORMAT:
         return load_luis_data(files[0])
     elif fformat == WIT_FILE_FORMAT:
@@ -256,4 +265,4 @@ def load_data(resource_name, fformat=None):
     elif fformat == RASA_FILE_FORMAT:
         return load_rasa_data(files[0])
     else:
-        raise ValueError("unknown training file format : {0}".format(fformat))
+        raise ValueError("unknown training file format : {} for file {}".format(fformat, resource_name))
