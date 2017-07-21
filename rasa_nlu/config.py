@@ -33,11 +33,12 @@ DEFAULT_CONFIG = {
     "max_number_of_ngrams": 7,
     "pipeline": [],
     "response_log": "logs",
+    "aws_endpoint_url": None,
     "duckling_dimensions": None,
     "entity_crf_BILOU_flag": True,
     "entity_crf_features": [
         ["low", "title", "upper", "pos", "pos2"],
-        ["bias", "low", "word3", "word2", "upper", "title", "digit", "pos", "pos2"],
+        ["bias", "low", "word3", "word2", "upper", "title", "digit", "pos", "pos2", "pattern"],
         ["low", "title", "upper", "pos", "pos2"]]
 }
 
