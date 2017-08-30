@@ -1,21 +1,21 @@
 from setuptools import setup
 
-__version__ = None   # Avoids IDE errors, but actual version is read from version.py
-exec(open('rasa_nlu/version.py').read())
+__version__ = None  # Avoids IDE errors, but actual version is read from version.py
+exec (open('rasa_nlu/version.py').read())
 
 tests_requires = [
     "pytest-pep8",
     "pytest-services",
-    "pytest-flask",
-    "pytest-cov"
+    "pytest-cov",
+    "pytest-twisted",
+    "treq"
 ]
 
 install_requires = [
-    "requests",
     "pathlib",
     "cloudpickle",
     "gevent",
-    "flask",
+    "klein",
     "boto3",
     "typing",
     "future",
@@ -61,3 +61,7 @@ setup(
     keywords=["NLP", "bots"],
     download_url="https://github.com/RasaHQ/rasa_nlu/archive/{}.tar.gz".format(__version__)
 )
+
+print("Welcome to rasa!\n")
+print("If any questions please visit documentation page http://rasa-nlu.readthedocs.io/en/latest/\n")
+print("or join community chat on https://gitter.im/RasaHQ/rasa_nlu\n")
